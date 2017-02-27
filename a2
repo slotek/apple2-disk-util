@@ -1,0 +1,526 @@
+#!/usr/bin/env ruby -w
+#
+# Apple II DOS 3.3 disk image utility
+# Copyright (C) 2017 slotek@nym.hush.com
+#
+require 'set'
+
+module Apple2
+  #
+  # Apple 2 => ASCII character ranges
+  #   00-1f => 40-5f inverse uppercase alpha
+  #   20-3f => 20-3f inverse symbols
+  #   40-5f => 40-5f flashing uppercase alpha
+  #   60-7f => 20-3f flashing symbols
+  #   80-ff => 00-7f standard ascii chars
+  #
+  def self.to_ascii(c)
+    if (c >= 0 && c <= 0x1f)
+      c += 0x40
+    elsif (c >= 0x60 && c <= 0x7f)
+      c -= 0x40
+    elsif (c >= 0x80)
+      c -= 0x80
+    end
+    return c
+  end
+
+  class Disk
+    class FileInfo
+      attr_reader :num_tsl_sectors, :num_data_sectors, :num_sectors
+
+      def initialize(data)
+        @num_tsl_sectors = (data.length / BYTES_PER_TSL_SECTOR) + ((data.length % BYTES_PER_TSL_SECTOR > 0) ? 1 : 0)
+        @num_data_sectors = data.length / BYTES_PER_SECTOR   # FIXME: assume no remainder
+        @num_sectors = @num_data_sectors + @num_tsl_sectors
+      end
+    end
+
+    TRACKS_PER_DISK           = 35
+    SECTORS_PER_TRACK         = 16
+    BYTES_PER_SECTOR          = 256
+    BYTES_PER_TRACK           = SECTORS_PER_TRACK * BYTES_PER_SECTOR
+    BYTES_PER_DISK            = TRACKS_PER_DISK * BYTES_PER_TRACK
+    TRACK_SECTOR_LIST_OFFSET  = 0xc
+    LINKS_PER_TSL_SECTOR      = 122
+    BYTES_PER_TSL_SECTOR      = LINKS_PER_TSL_SECTOR * BYTES_PER_SECTOR
+    TSL_LINK_OFFSET           = 0xc
+    TSL_SECTOR_NUM_OFFSET     = 5
+
+    attr_reader :catalog
+
+    def self.valid_ts?(track, sector)
+      track >= 0 && track < Disk::TRACKS_PER_DISK && sector >= 0 && sector < Disk::SECTORS_PER_TRACK
+    end
+
+    def initialize(filename)
+      @filename = filename
+      File.open(@filename, "rb") { |f| @buf = f.read }
+      @vtoc = VTOC.new(self)
+      @catalog = Catalog.new(self, @vtoc.catalog_track, @vtoc.catalog_sector)
+    end
+
+    def valid?
+      ((BYTES_PER_DISK - @buf.length).abs < BYTES_PER_SECTOR) && @vtoc.valid?
+    end
+
+    def read_byte(track, sector, byte = 0)
+      @buf[to_offset(track, sector, byte)].unpack("C").first
+    end
+
+    def read_bytes(track, sector, byte = 0, length = BYTES_PER_SECTOR)
+      if length > 0 && (byte + length <= BYTES_PER_SECTOR)
+        return @buf[to_offset(track, sector, byte), length]
+      else
+        raise "Cannot read #{length} bytes from offset #{byte}"
+      end
+    end
+
+    def write_bytes(track, sector, byte, src)
+      if src.length > 0 && (byte + src.length <= BYTES_PER_SECTOR)
+        i = to_offset(track, sector, byte)
+        src.each_char do |c|
+          @buf[i] = c
+          i += 1
+        end
+      else
+        raise "Cannot write #{src.length} bytes at offset #{byte}"
+      end
+    end
+
+    def read_file(file_entry)
+      filebuf = ""
+      get_ts_list(file_entry).each do |t, s|
+        filebuf << read_bytes(t, s)
+      end
+      filebuf
+    end
+
+    def write_file(filename, type, data)
+      file_info = FileInfo.new(data)
+
+      # Check for free space
+      num_free_sectors = @vtoc.num_free
+      if file_info.num_sectors > num_free_sectors
+        raise "#{num_free_sectors} free sectors is insufficient for #{file_info.num_sectors} sector file"
+      end
+
+      # Loop through tsl sectors
+      data_index = 0
+      tsl_sectors = []
+      tsl_sector_index = 0
+      while tsl_sector_index < file_info.num_tsl_sectors
+        # Allocate tsl sector
+        tsl_sectors << @vtoc.alloc_next_free
+
+        # Loop through data sectors defined by this tsl sector
+        data_sectors = []
+        data_sector_index = 0
+        while data_index < data.length && data_sector_index < LINKS_PER_TSL_SECTOR
+          # Allocate data sector
+          data_sectors << @vtoc.alloc_next_free
+
+          # Write file data
+          write_bytes(data_sectors.last[0], data_sectors.last[1], 0, data[data_index, BYTES_PER_SECTOR])
+          data_index += BYTES_PER_SECTOR
+
+          data_sector_index += 1
+        end
+
+        # Write data sector links to tsl sector
+        tsl_offset = TSL_LINK_OFFSET
+        data_sectors.each do |link|
+          write_bytes(tsl_sectors.last[0], tsl_sectors.last[1], TSL_SECTOR_NUM_OFFSET, [tsl_sector_index * LINKS_PER_TSL_SECTOR].pack("v"))
+          write_bytes(tsl_sectors.last[0], tsl_sectors.last[1], tsl_offset, link.pack("CC"))
+          tsl_offset += 2
+        end
+
+        tsl_sector_index += 1
+      end
+
+      # Update links between tsl sectors
+      tsl_sector_index = 0
+      while file_info.num_tsl_sectors > 1 && tsl_sector_index < (file_info.num_tsl_sectors - 1)
+        write_bytes(tsl_sectors[tsl_sector_index][0], tsl_sectors[tsl_sector_index][1], 1, tsl_sectors[tsl_sector_index + 1].pack("CC"))
+        tsl_sector_index += 1
+      end
+
+      @catalog.add_file_entry(filename, type, file_info.num_sectors, tsl_sectors[0][0], tsl_sectors[0][1])
+    end
+
+    def write
+      File.open(@filename, "wb") { |f| f << @buf }
+    end
+
+    private
+
+    def to_offset(track, sector, byte = 0)
+      if track >= 0 && track < TRACKS_PER_DISK && sector >= 0 && sector < SECTORS_PER_TRACK && byte >= 0 && byte < BYTES_PER_SECTOR
+        return track * BYTES_PER_TRACK + sector * BYTES_PER_SECTOR + byte
+      else
+        raise sprintf("Invalid offset: track %02x, sector %02x, byte %02x", track, sector, byte)
+      end
+    end
+
+    def get_ts_list(file_entry)
+      ts_list = []
+      t = file_entry.ts_list_track
+      s = file_entry.ts_list_sector
+      while (t > 0 && t < TRACKS_PER_DISK)
+        TRACK_SECTOR_LIST_OFFSET.step(BYTES_PER_SECTOR-1, 2) do |i|
+          ts = read_bytes(t, s, i, 2).unpack("CC")
+          break if ts[0] == 0
+          ts_list << ts
+        end
+        t, s = read_bytes(t, s, 1, 2).unpack("CC")
+      end
+      ts_list
+    end
+  end
+
+  class VTOC
+    class Bitmap
+      BITMAP_LENGTH = 2
+
+      def initialize(disk, track)
+        @disk = disk
+        @track = track
+        @offset = VTOC::TRACK_BITMAP_OFFSET + (track * BITMAP_LENGTH * 2)
+      end
+
+      def alloc(sector)
+        write_bitmap(read_bitmap & ~(1 << sector))
+      end
+
+      def free(sector)
+        write_bitmap(read_bitmap | (1 << sector))
+      end
+
+      def free?(sector)
+        (read_bitmap & (1 << sector)) != 0
+      end
+
+      private
+
+      def read_bitmap
+        @disk.read_bytes(VTOC::VTOC_TRACK, VTOC::VTOC_SECTOR, @offset, BITMAP_LENGTH).unpack("n").first
+      end
+
+      def write_bitmap(bmp)
+        @disk.write_bytes(VTOC::VTOC_TRACK, VTOC::VTOC_SECTOR, @offset, [bmp].pack("n"))
+      end
+    end
+
+    VTOC_TRACK                = 0x11
+    VTOC_SECTOR               = 0
+    CATALOG_TRACK_OFFSET      = 1
+    CATALOG_SECTOR_OFFSET     = 2
+    SECTORS_PER_TRACK_OFFSET  = 0x35
+    TRACK_BITMAP_OFFSET       = 0x38
+
+    def initialize(disk)
+      @disk = disk
+    end
+
+    def valid?
+      @disk.read_byte(VTOC_TRACK, VTOC_SECTOR, SECTORS_PER_TRACK_OFFSET) == Disk::SECTORS_PER_TRACK
+    end
+
+    def catalog_track
+      @disk.read_byte(VTOC_TRACK, VTOC_SECTOR, CATALOG_TRACK_OFFSET)
+    end
+
+    def catalog_sector
+      @disk.read_byte(VTOC_TRACK, VTOC_SECTOR, CATALOG_SECTOR_OFFSET)
+    end
+
+    def alloc(track, sector)
+      Bitmap.new(@disk, track).alloc(sector) if Disk::valid_ts?(track, sector)
+    end
+
+    def free(track, sector)
+      Bitmap.new(@disk, track).free(sector) if Disk::valid_ts?(track, sector)
+    end
+
+    def free?(track, sector)
+      Disk::valid_ts?(track, sector) ? Bitmap.new(@disk, track).free?(sector) : false
+    end
+
+    def alloc_next_free
+      t, s = next_free
+      alloc(t, s)
+      [t, s]
+    end
+
+    # TODO: Improve allocation strategy accuracy to more closely match that of DOS 3.3
+    # Try (VTOC.last_allocated_track + VTOC.direction, 0xF) first.
+    def next_free
+      t = 0x12
+      s = 0xf
+
+      # Search from track 0x12 to 0x22, then from 0x10 to 0
+      loop do
+        if free?(t, s)
+          return [t, s]
+        end
+
+        # Last sector?
+        if t == 0 && s == 0
+          return nil
+        end
+
+        # Adjust track & sector
+        if s > 0
+          s -= 1
+        else
+          s = 0xf
+          if t > 0x11 && t < 0x22
+            t += 1
+          elsif t == 0x22
+            t = 0x10
+          else
+            t -= 1
+          end
+        end
+      end
+    end
+
+    def num_free
+      count = 0
+      Disk::TRACKS_PER_DISK.times do |t|
+        Disk::SECTORS_PER_TRACK.times do |s|
+          count += 1 if free?(t, s)
+        end
+      end
+      count
+    end
+  end
+
+  class Catalog
+    FILE_ENTRY_OFFSETS  = [0xb, 0x2e, 0x51, 0x74, 0x97, 0xba, 0xdd]
+    FILE_ENTRY_LENGTH   = 0x23
+
+    attr_reader :file_entries
+
+    def self.valid_ts?(track, sector)
+      track > 0 && track < Disk::TRACKS_PER_DISK && sector > 0 && sector < Disk::SECTORS_PER_TRACK
+    end
+
+    def initialize(disk, track, sector)
+      @disk = disk
+      @file_entries = []
+      @catalog_track = track
+      @catalog_sector = sector
+
+      # Parse files from catalog sectors
+      if disk.valid?
+        visited = Set.new
+        found_empty = false
+        while Catalog.valid_ts?(track, sector) && !found_empty && !visited.include?([track, sector])
+          FILE_ENTRY_OFFSETS.each do |i|
+            entry = FileEntry.parse(@disk.read_bytes(track, sector, i, FILE_ENTRY_LENGTH))
+            if entry.empty?
+              found_empty = true
+            elsif !entry.deleted?
+              @file_entries << entry
+            end
+          end
+          visited << [track, sector]
+          track, sector = @disk.read_bytes(track, sector, 1, 2).unpack("CC")
+        end
+      end
+    end
+
+    def add_file_entry(name, type, length, ts_list_track, ts_list_sector)
+      done = false
+      track = @catalog_track
+      sector = @catalog_sector
+      while Catalog.valid_ts?(track, sector) && !done
+        FILE_ENTRY_OFFSETS.each do |i|
+          entry = FileEntry.parse(@disk.read_bytes(track, sector, i, FILE_ENTRY_LENGTH))
+          if entry.empty? || entry.deleted?
+            new_entry = FileEntry.new(name, type, length, ts_list_track, ts_list_sector)
+            @file_entries << new_entry
+            @disk.write_bytes(track, sector, i, new_entry.to_buffer)
+            done = true
+            break
+          end
+        end
+        track, sector = @disk.read_bytes(track, sector, 1, 2).unpack("CC")
+      end
+    end
+  end
+
+  class FileEntry
+    FILE_NAME_LENGTH = 30
+    FILE_TYPES = {
+      0 => "T",
+      1 => "I",
+      2 => "A",
+      4 => "B",
+      8 => "S",
+      0x10 => "R",
+      0x20 => "a",
+      0x40 => "b"
+    }
+
+    attr_reader :name, :length, :ts_list_track, :ts_list_sector, :flags
+
+    def self.parse(buf)
+      ts_list_track, ts_list_sector = buf[0, 2].unpack("CC")
+      flags = buf[2].unpack("C").first
+      name = ""
+      buf[3, FILE_NAME_LENGTH].each_byte { |c| name << Apple2::to_ascii(c) }
+      length = buf[0x21, 2].unpack("v").first
+      FileEntry.new(name, flags, length, ts_list_track, ts_list_sector)
+    end
+
+    def initialize(name, flags, length, ts_list_track, ts_list_sector)
+      @name = name
+      @flags = flags
+      @length = length
+      @ts_list_track = ts_list_track
+      @ts_list_sector = ts_list_sector
+    end
+
+    def to_buffer
+      buf = [@ts_list_track, @ts_list_sector, @flags].pack("C*")
+
+      @name.each_byte { |c| buf << (c | 0x80) }
+      i = @name.length
+      while i < FILE_NAME_LENGTH
+        buf << 0xa0
+        i += 1
+      end
+
+      buf << [@length].pack("v")
+    end
+
+    def empty?
+      @ts_list_track == 0 && @ts_list_sector == 0
+    end
+
+    def deleted?
+      @ts_list_track == 0xff
+    end
+
+    def locked?
+      @flags & 0x80
+    end
+
+    def type
+      FILE_TYPES.fetch(@flags & 0x7f, "?")
+    end
+
+    def to_s
+      str = locked? ? "*" : " "
+      str << type << " "
+      str << sprintf("%03d", length) << " "
+      str << name
+      str
+    end
+  end
+end
+
+# ---------- Main ----------
+
+class Main
+  class CommandError < StandardError
+  end
+
+  # TODO: Use GLI gem instead
+  class Command
+    def self.create(args)
+      command = args.shift
+      if (command.nil?)
+        raise CommandError.new("Missing command. See \"#{$0} help\" for more info.")
+      end
+
+      klass = "Main::#{command.capitalize}Command"
+
+      if Object.const_defined?(klass)
+        return Object.const_get(klass).new(args)
+      else
+        raise CommandError.new("Unknown command: \"#{command}\". See \"#{$0} help\" for more info.")
+      end
+    end
+
+    def initialize(args)
+      @args = args.dup
+    end
+
+    def run
+      raise NotImplementedError
+    end
+  end
+
+  class HelpCommand < Command
+    VERSION = "0.1"
+    def run
+      puts "Apple II Disk Image Utility v#{VERSION}"
+      puts
+      puts "Usage: a2 <command>"
+      puts
+      puts "Where <command> is:"
+      puts "  catalog [<disk>...]"
+      puts "  copy <source_file> <source_disk> <destination_disk>"
+      puts
+    end
+  end
+
+  class CatalogCommand < Command
+    def run
+      @args.each do |filename|
+        puts "#{filename}:"
+        Apple2::Disk.new(filename).catalog.file_entries.each { |f| puts f.to_s }
+        puts
+      end
+    end
+  end
+
+  class CopyCommand < Command
+    def run
+      src_file = @args.shift
+      src_disk = @args.shift
+      dest_disk = @args.shift
+
+      raise CommandError.new("Source file not specified") if !src_file
+      raise CommandError.new("Source disk not specified") if !src_disk
+      raise CommandError.new("Destination disk not specified") if !dest_disk
+
+      if @args.length > 0
+        raise CommandError.new("Too many copy command arguments.")
+      end
+
+      puts "Copying file \"#{src_file}\" from disk \"#{src_disk}\" to disk \"#{dest_disk}\""
+
+      #TODO: file_entries[filename], file_exists?
+      found = false
+      src = Apple2::Disk.new(src_disk)
+      src.catalog.file_entries.each do |f|
+        if (src_file == f.name.strip)
+          dest = Apple2::Disk.new(dest_disk)
+          dest.write_file(f.name, f.flags, src.read_file(f))
+          dest.write
+          found = true
+          break
+        end
+      end
+
+      if (!found)
+        raise new CommandError("File not found: \"#{src_file}\"")
+      end
+    end
+  end
+
+  def run
+    begin
+      Command.create(ARGV).run
+    rescue CommandError => e
+      puts "Error: #{e}"
+      exit 1
+    end
+  end
+end
+
+Main.new.run
