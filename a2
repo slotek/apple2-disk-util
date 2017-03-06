@@ -1,9 +1,12 @@
-#!/usr/bin/env ruby -w
+#!/usr/bin/env ruby
 #
 # Apple II DOS 3.3 disk image utility
 # Copyright (C) 2017 slotek@nym.hush.com
 #
+require 'gli'
 require 'set'
+
+# ---------- Apple 2 Utility ----------
 
 module Apple2
   #
@@ -26,6 +29,12 @@ module Apple2
   end
 
   class Disk
+    def self.catalog(dsk)
+      puts "#{dsk}:"
+      Apple2::Disk.new(dsk).catalog.file_entries.each { |f| puts f.to_s }
+      puts
+    end
+
     class FileInfo
       attr_reader :num_tsl_sectors, :num_data_sectors, :num_sectors
 
@@ -99,11 +108,13 @@ module Apple2
     def write_file(filename, type, data)
       file_info = FileInfo.new(data)
 
-      # Check for free space
-      num_free_sectors = @vtoc.num_free
-      if file_info.num_sectors > num_free_sectors
-        raise "#{num_free_sectors} free sectors is insufficient for #{file_info.num_sectors} sector file"
+      vtoc_free_sectors = @vtoc.free_sectors
+      if file_info.num_sectors > vtoc_free_sectors.length
+        raise sprintf("Insufficient space. Free sectors: %d, file sectors: %d\n",
+                      vtoc_free_sectors.length, file_info.num_sectors)
       end
+
+      free_sectors = vtoc_free_sectors.each
 
       # Loop through tsl sectors
       data_index = 0
@@ -111,17 +122,19 @@ module Apple2
       tsl_sector_index = 0
       while tsl_sector_index < file_info.num_tsl_sectors
         # Allocate tsl sector
-        tsl_sectors << @vtoc.alloc_next_free
+        tsl_sectors << @vtoc.alloc(free_sectors.next)
 
         # Loop through data sectors defined by this tsl sector
         data_sectors = []
         data_sector_index = 0
         while data_index < data.length && data_sector_index < LINKS_PER_TSL_SECTOR
           # Allocate data sector
-          data_sectors << @vtoc.alloc_next_free
+          data_sectors << @vtoc.alloc(free_sectors.next)
 
           # Write file data
-          write_bytes(data_sectors.last[0], data_sectors.last[1], 0, data[data_index, BYTES_PER_SECTOR])
+          data_track, data_sector = data_sectors.last
+          write_bytes(data_track, data_sector, 0, data[data_index, BYTES_PER_SECTOR])
+          last_track_written = data_track
           data_index += BYTES_PER_SECTOR
 
           data_sector_index += 1
@@ -130,8 +143,10 @@ module Apple2
         # Write data sector links to tsl sector
         tsl_offset = TSL_LINK_OFFSET
         data_sectors.each do |link|
-          write_bytes(tsl_sectors.last[0], tsl_sectors.last[1], TSL_SECTOR_NUM_OFFSET, [tsl_sector_index * LINKS_PER_TSL_SECTOR].pack("v"))
-          write_bytes(tsl_sectors.last[0], tsl_sectors.last[1], tsl_offset, link.pack("CC"))
+          tsl_track, tsl_sector = tsl_sectors.last
+          write_bytes(tsl_track, tsl_sector, TSL_SECTOR_NUM_OFFSET,
+                      [tsl_sector_index * LINKS_PER_TSL_SECTOR].pack("v"))
+          write_bytes(tsl_track, tsl_sector, tsl_offset, link.pack("CC"))
           tsl_offset += 2
         end
 
@@ -141,11 +156,15 @@ module Apple2
       # Update links between tsl sectors
       tsl_sector_index = 0
       while file_info.num_tsl_sectors > 1 && tsl_sector_index < (file_info.num_tsl_sectors - 1)
-        write_bytes(tsl_sectors[tsl_sector_index][0], tsl_sectors[tsl_sector_index][1], 1, tsl_sectors[tsl_sector_index + 1].pack("CC"))
+        t, s = tsl_sectors[tsl_sector_index]
+        write_bytes(t, s, 1, tsl_sectors[tsl_sector_index + 1].pack("CC"))
         tsl_sector_index += 1
       end
 
-      @catalog.add_file_entry(filename, type, file_info.num_sectors, tsl_sectors[0][0], tsl_sectors[0][1])
+      @vtoc.set_last_allocated_track(last_track_written)
+
+      @catalog.add_file_entry(filename, type, file_info.num_sectors, tsl_sectors[0][0],
+                              tsl_sectors[0][1])
     end
 
     def write
@@ -217,6 +236,8 @@ module Apple2
     CATALOG_SECTOR_OFFSET     = 2
     SECTORS_PER_TRACK_OFFSET  = 0x35
     TRACK_BITMAP_OFFSET       = 0x38
+    LAST_ALLOCATED_TRACK_OFFSET = 0x30
+    ALLOCATION_DIRECTION_OFFSET = 0x31
 
     def initialize(disk)
       @disk = disk
@@ -234,8 +255,10 @@ module Apple2
       @disk.read_byte(VTOC_TRACK, VTOC_SECTOR, CATALOG_SECTOR_OFFSET)
     end
 
-    def alloc(track, sector)
-      Bitmap.new(@disk, track).alloc(sector) if Disk::valid_ts?(track, sector)
+    def alloc(track_sector)
+      t, s = track_sector
+      Bitmap.new(@disk, t).alloc(s) if Disk::valid_ts?(t, s)
+      track_sector
     end
 
     def free(track, sector)
@@ -246,53 +269,57 @@ module Apple2
       Disk::valid_ts?(track, sector) ? Bitmap.new(@disk, track).free?(sector) : false
     end
 
-    def alloc_next_free
-      t, s = next_free
-      alloc(t, s)
-      [t, s]
+    def last_allocated_track
+      @disk.read_byte(VTOC_TRACK, VTOC_SECTOR, LAST_ALLOCATED_TRACK_OFFSET)
     end
 
-    # TODO: Improve allocation strategy accuracy to more closely match that of DOS 3.3
-    # Try (VTOC.last_allocated_track + VTOC.direction, 0xF) first.
-    def next_free
-      t = 0x12
+    def set_last_allocated_track(track)
+      @disk.write_bytes(VTOC_TRACK, VTOC_SECTOR, LAST_ALLOCATED_TRACK_OFFSET, [track].pack("C"))
+      set_allocation_direction(track)
+    end
+
+    def allocation_direction
+      @disk.read_byte(VTOC_TRACK, VTOC_SECTOR, ALLOCATION_DIRECTION_OFFSET) == 1 ? 1 : -1
+    end
+
+    # Return list of free [track, sector] pairs as ordered
+    # by the DOS 3.3 file allocation strategy.
+    def free_sectors
+      free = []
+      direction = allocation_direction
+        
+      t = last_allocated_track + direction
       s = 0xf
 
-      # Search from track 0x12 to 0x22, then from 0x10 to 0
       loop do
-        if free?(t, s)
-          return [t, s]
-        end
+        free << [t, s] if free?(t, s)
 
-        # Last sector?
-        if t == 0 && s == 0
-          return nil
-        end
+        break if t == 0 && s == 0
 
         # Adjust track & sector
         if s > 0
           s -= 1
         else
           s = 0xf
-          if t > 0x11 && t < 0x22
-            t += 1
-          elsif t == 0x22
+          t += direction
+          if t > 0x22
             t = 0x10
-          else
-            t -= 1
+            direction = -1
+          elsif t < 0
+            t = 0x11
+            direction = 1
           end
         end
       end
+
+      free
     end
 
-    def num_free
-      count = 0
-      Disk::TRACKS_PER_DISK.times do |t|
-        Disk::SECTORS_PER_TRACK.times do |s|
-          count += 1 if free?(t, s)
-        end
-      end
-      count
+    private
+
+    def set_allocation_direction(track)
+      d = track >= 0x11 ? 1 : 0xff
+      @disk.write_bytes(VTOC_TRACK, VTOC_SECTOR, ALLOCATION_DIRECTION_OFFSET, [d].pack("C"))
     end
   end
 
@@ -422,105 +449,113 @@ module Apple2
   end
 end
 
-# ---------- Main ----------
+# ---------- GLI command line application ----------
 
-class Main
-  class CommandError < StandardError
-  end
+include GLI::App
+include Apple2
 
-  # TODO: Use GLI gem instead
-  class Command
-    def self.create(args)
-      command = args.shift
-      if (command.nil?)
-        raise CommandError.new("Missing command. See \"#{$0} help\" for more info.")
-      end
+program_desc 'Apple II Disk Image Utility'
+version '0.2.0'
 
-      klass = "Main::#{command.capitalize}Command"
+subcommand_option_handling :normal
+arguments :strict
 
-      if Object.const_defined?(klass)
-        return Object.const_get(klass).new(args)
-      else
-        raise CommandError.new("Unknown command: \"#{command}\". See \"#{$0} help\" for more info.")
-      end
-    end
+# Catalog command
+desc 'Display contents of specified Apple II disk image(s)'
+long_desc """
+Display the Apple II DOS 3.3 catalog information for the specified
+path arguments. Each path argument is either a directory, DSK, or DO
+file image name. If no arguments are given, catalog info is displayed
+for each disk image found in the current directory.
+"""
 
-    def initialize(args)
-      @args = args.dup
-    end
+arg_name '[path...]'
+command [:catalog, :ls] do |c|
+  c.desc 'Recursively search each specified directory'
+  c.switch [:R, :recurse]
 
-    def run
-      raise NotImplementedError
-    end
-  end
-
-  class HelpCommand < Command
-    VERSION = "0.1"
-    def run
-      puts "Apple II Disk Image Utility v#{VERSION}"
-      puts
-      puts "Usage: a2 <command>"
-      puts
-      puts "Where <command> is:"
-      puts "  catalog [<disk>...]"
-      puts "  copy <source_file> <source_disk> <destination_disk>"
-      puts
-    end
-  end
-
-  class CatalogCommand < Command
-    def run
-      @args.each do |filename|
-        puts "#{filename}:"
-        Apple2::Disk.new(filename).catalog.file_entries.each { |f| puts f.to_s }
-        puts
-      end
-    end
-  end
-
-  class CopyCommand < Command
-    def run
-      src_file = @args.shift
-      src_disk = @args.shift
-      dest_disk = @args.shift
-
-      raise CommandError.new("Source file not specified") if !src_file
-      raise CommandError.new("Source disk not specified") if !src_disk
-      raise CommandError.new("Destination disk not specified") if !dest_disk
-
-      if @args.length > 0
-        raise CommandError.new("Too many copy command arguments.")
-      end
-
-      puts "Copying file \"#{src_file}\" from disk \"#{src_disk}\" to disk \"#{dest_disk}\""
-
-      #TODO: file_entries[filename], file_exists?
-      found = false
-      src = Apple2::Disk.new(src_disk)
-      src.catalog.file_entries.each do |f|
-        if (src_file == f.name.strip)
-          dest = Apple2::Disk.new(dest_disk)
-          dest.write_file(f.name, f.flags, src.read_file(f))
-          dest.write
-          found = true
-          break
+  c.action do |global_options,options,args|
+    args << "." if args.empty?
+    args.each do |path|
+      if Dir.exists?(path)
+        dir = path
+        dir << "/**" if options[:recurse]
+        dir << "/*.{do,dsk}"
+        Dir.glob(dir, File::FNM_CASEFOLD).sort.each do |dsk|
+          Disk.catalog(dsk)
         end
+      elsif File.exist?(path)
+        Disk.catalog(path)
       end
-
-      if (!found)
-        raise new CommandError("File not found: \"#{src_file}\"")
-      end
-    end
-  end
-
-  def run
-    begin
-      Command.create(ARGV).run
-    rescue CommandError => e
-      puts "Error: #{e}"
-      exit 1
     end
   end
 end
 
-Main.new.run
+# Copy command
+desc 'Copy a DOS 3.3 file from one disk image to another'
+arg_name 'src_file src_disk dest_disk'
+command [:copy, :cp] do |c|
+  c.desc 'Verbose mode'
+  c.switch [:v, :verbose]
+
+  c.flag [:d, :destination],
+    :arg_name => 'file',
+    :desc => 'Destination file name'
+
+  c.action do |global_options,options,args|
+    src_file_name = args.shift
+    src_disk_name = args.shift
+    dest_disk_name = args.shift
+    dest_file_name = options[:destination] ||= src_file_name
+
+    raise "Source file not specified" if !src_file_name
+    raise "Source disk not specified" if !src_disk_name
+    raise "Destination disk not specified" if !dest_disk_name
+    raise "Too many copy command arguments" if args.length > 0
+
+    if options[:verbose]
+      printf("Copying file \"%s\" from disk \"%s\" to file \"%s\" on disk \"%s\"\n",
+             src_file_name, src_disk_name,
+             dest_file_name, dest_disk_name)
+    end
+
+    #TODO: file_entries[filename], file_exists?
+    #TODO: verify dest disk exists and is dos disk
+    #TODO: verify dest file name does not already exist
+    found = false
+    src_disk = Disk.new(src_disk_name)
+    src_disk.catalog.file_entries.each do |f|
+      if (src_file_name == f.name.strip)
+        dest_disk = Disk.new(dest_disk_name)
+        dest_disk.write_file(dest_file_name, f.flags, src_disk.read_file(f))
+        dest_disk.write
+        found = true
+        break
+      end
+    end
+
+    if (!found)
+      raise "File not found: \"#{src_file_name}\""
+    end
+  end
+end
+
+# Pre command execution hook
+pre do |global,command,options,args|
+  # Return false to abort command execution
+  true
+end
+
+# Post command execution hook
+post do |global,command,options,args|
+  # Post logic here
+end
+
+# Error handler
+on_error do |exception|
+  # Return false to skip default error handling
+  true
+end
+
+# Run the application
+exit run(ARGV)
