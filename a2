@@ -116,49 +116,28 @@ module Apple2
 
       free_sectors = vtoc_free_sectors.each
 
-      # Loop through tsl sectors
-      data_index = 0
       tsl_sectors = []
-      tsl_sector_index = 0
-      while tsl_sector_index < file_info.num_tsl_sectors
-        # Allocate tsl sector
-        tsl_sectors << @vtoc.alloc(free_sectors.next)
-
-        # Loop through data sectors defined by this tsl sector
-        data_sectors = []
-        data_sector_index = 0
-        while data_index < data.length && data_sector_index < LINKS_PER_TSL_SECTOR
-          # Allocate data sector
-          data_sectors << @vtoc.alloc(free_sectors.next)
-
-          # Write file data
-          data_track, data_sector = data_sectors.last
-          write_bytes(data_track, data_sector, 0, data[data_index, BYTES_PER_SECTOR])
-          last_track_written = data_track
-          data_index += BYTES_PER_SECTOR
-
-          data_sector_index += 1
+      last_track_written = 0
+      file_info.num_data_sectors.times do |d|
+        # Allocate TSL sector if necessary
+        if d % LINKS_PER_TSL_SECTOR == 0
+          tsl_sectors << @vtoc.alloc(free_sectors.next)
+          #printf("%p tsl\n", tsl_sectors.last)
         end
 
-        # Write data sector links to tsl sector
-        tsl_offset = TSL_LINK_OFFSET
-        data_sectors.each do |link|
-          tsl_track, tsl_sector = tsl_sectors.last
-          write_bytes(tsl_track, tsl_sector, TSL_SECTOR_NUM_OFFSET,
-                      [tsl_sector_index * LINKS_PER_TSL_SECTOR].pack("v"))
-          write_bytes(tsl_track, tsl_sector, tsl_offset, link.pack("CC"))
-          tsl_offset += 2
-        end
+        # Allocate and write data sector
+        data_sector = @vtoc.alloc(free_sectors.next)
+        write_file_data_sector(data_sector, d, data)
+        last_track_written = data_sector[0]
 
-        tsl_sector_index += 1
+        # Write link to TSL sector
+        write_file_link(tsl_sectors.last, tsl_sectors.index(tsl_sectors.last), data_sector, d % LINKS_PER_TSL_SECTOR)
       end
 
       # Update links between tsl sectors
-      tsl_sector_index = 0
-      while file_info.num_tsl_sectors > 1 && tsl_sector_index < (file_info.num_tsl_sectors - 1)
+      for tsl_sector_index in (0...tsl_sectors.length-1)
         t, s = tsl_sectors[tsl_sector_index]
         write_bytes(t, s, 1, tsl_sectors[tsl_sector_index + 1].pack("CC"))
-        tsl_sector_index += 1
       end
 
       @vtoc.set_last_allocated_track(last_track_written)
@@ -194,6 +173,18 @@ module Apple2
         t, s = read_bytes(t, s, 1, 2).unpack("CC")
       end
       ts_list
+    end
+
+    def write_file_data_sector(data_ts, index, data)
+      #printf("%p data index %d, ", data_ts, index)
+      write_bytes(data_ts[0], data_ts[1], 0, data[index * BYTES_PER_SECTOR, BYTES_PER_SECTOR])
+    end
+
+    def write_file_link(tsl_ts, tsl_sector_index, link_ts, link_index)
+      #printf("tsl %p, link %d = %p\n", tsl_ts, link_index, link_ts)
+      write_bytes(tsl_ts[0], tsl_ts[1], TSL_SECTOR_NUM_OFFSET,
+                  [tsl_sector_index * LINKS_PER_TSL_SECTOR].pack("v"))
+      write_bytes(tsl_ts[0], tsl_ts[1], 2 * link_index + TSL_LINK_OFFSET, link_ts.pack("CC"))
     end
   end
 
@@ -455,7 +446,7 @@ include GLI::App
 include Apple2
 
 program_desc 'Apple II Disk Image Utility'
-version '0.2.0'
+version '0.2.1'
 
 subcommand_option_handling :normal
 arguments :strict
