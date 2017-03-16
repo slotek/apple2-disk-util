@@ -15,3 +15,7 @@ Here are a few sample commands:
     a2 copy SABOTAGE src.dsk dest.dsk
 
 See `a2 --help` for more info.
+
+TODO
+----
+Modularize (lib/bin), rakefile, minitest, gem install, docs.
