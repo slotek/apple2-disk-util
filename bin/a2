@@ -1,0 +1,123 @@
+#!/usr/bin/env ruby
+
+##
+# Apple II DOS 3.3 disk image utility
+# Copyright (C) 2017 slotek@nym.hush.com
+
+require 'gli'
+require 'apple2'
+
+include GLI::App
+include Apple2
+
+program_desc 'Apple II Disk Image Utility'
+version '0.2.3'
+
+subcommand_option_handling :normal
+arguments :strict
+
+##
+# Catalog command
+
+desc 'Display contents of specified Apple II disk image(s)'
+long_desc """
+Display the Apple II DOS 3.3 catalog information for the specified
+path arguments. Each path argument is either a directory, DSK, or DO
+file image name. If no arguments are given, catalog info is displayed
+for each disk image found in the current directory.
+"""
+
+arg_name '[path...]'
+command [:catalog, :ls] do |c|
+  c.desc 'Recursively search each specified directory'
+  c.switch [:R, :recurse]
+
+  c.action do |global_options,options,args|
+    args << "." if args.empty?
+    args.each do |path|
+      if Dir.exists?(path)
+        dir = path
+        dir << "/**" if options[:recurse]
+        dir << "/*.{do,dsk}"
+        Dir.glob(dir, File::FNM_CASEFOLD).sort.each do |dsk|
+          DOSDisk.catalog(dsk)
+        end
+      elsif File.exist?(path)
+        DOSDisk.catalog(path)
+      end
+    end
+  end
+end
+
+##
+# Copy command
+
+desc 'Copy a DOS 3.3 file from one disk image to another'
+arg_name 'src_file src_disk dest_disk'
+command [:copy, :cp] do |c|
+  c.desc 'Verbose mode'
+  c.switch [:v, :verbose]
+
+  c.flag [:d, :destination],
+    :arg_name => 'file',
+    :desc => 'Destination file name'
+
+  c.action do |global_options,options,args|
+    src_file_name = args.shift
+    src_disk_name = args.shift
+    dest_disk_name = args.shift
+    dest_file_name = options[:destination] ||= src_file_name
+
+    raise "Source file not specified" if !src_file_name
+    raise "Source disk not specified" if !src_disk_name
+    raise "Destination disk not specified" if !dest_disk_name
+    raise "Too many copy command arguments" if args.length > 0
+
+    if options[:verbose]
+      printf("Copying file \"%s\" from disk \"%s\" to file \"%s\" on disk \"%s\"\n",
+             src_file_name, src_disk_name,
+             dest_file_name, dest_disk_name)
+    end
+
+    DOSDisk.open(src_disk_name) do |src|
+      if false # TODO !src.exists?(src_file_name)
+        raise "Source file not found: \"#{src_file_name}\""
+      end
+
+      DOSDisk.open(dest_disk_name) do |dest|
+        if false # TODO dest.exists?(dest_file_name)
+          raise "Destination file already exists: \"#{dest_file_name}\""
+        end
+
+        dest.write(src.read(src_file_name), dest_file_name)
+      end
+    end
+
+  end
+end
+
+##
+# Pre command execution hook (TODO del?)
+
+pre do |global,command,options,args|
+  # Return false to abort command execution
+  true
+end
+
+##
+# Post command execution hook
+
+post do |global,command,options,args|
+  # Post logic here
+end
+
+##
+# Error handler
+
+on_error do |exception|
+  # Return false to skip default error handling
+  true
+end
+
+# Run the application
+exit run(ARGV)
