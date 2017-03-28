@@ -45,7 +45,7 @@ module Apple2
     # Return string as an Apple 2 character buffer
 
     def to_buffer
-      buffer = String.new
+      buffer = String.new("", :encoding => "ASCII-8BIT")
       each_byte { |c| buffer << (c | 0x80) }
       buffer
     end

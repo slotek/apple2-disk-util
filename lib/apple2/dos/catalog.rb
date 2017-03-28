@@ -1,6 +1,6 @@
 require 'set'
 
-require 'apple2/dosdisk.rb'
+require 'apple2/disk.rb'
 
 module Apple2::DOS
 

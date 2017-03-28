@@ -25,7 +25,8 @@ class TestString < Test::Unit::TestCase
   end
 
   def test_buffer
-    assert_equal(Apple2String.new("[Apple]").to_buffer, "\xdb\xc1\xf0\xf0\xec\xe5\xdd")
+    assert_equal String.new("\xdb\xc1\xf0\xf0\xec\xe5\xdd", :encoding => "ASCII-8BIT"),
+      Apple2String.new("[Apple]").to_buffer
   end
 
 end
