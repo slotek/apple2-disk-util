@@ -66,6 +66,13 @@ module Apple2
     end
 
     ##
+    # Return true if specified file exists
+
+    def exists?(filename)
+      @catalog.file_entries.find { |f| filename == f.name.strip }
+    end
+
+    ##
     # Read specified file
 
     def read(filename)

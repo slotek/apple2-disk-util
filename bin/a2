@@ -11,7 +11,7 @@ include GLI::App
 include Apple2
 
 program_desc 'Apple II Disk Image Utility'
-version '0.2.3'
+version '0.2.4'
 
 subcommand_option_handling :normal
 arguments :strict
@@ -80,12 +80,12 @@ command [:copy, :cp] do |c|
     end
 
     DOSDisk.open(src_disk_name) do |src|
-      if false # TODO !src.exists?(src_file_name)
+      if !src.exists?(src_file_name)
         raise "Source file not found: \"#{src_file_name}\""
       end
 
       DOSDisk.open(dest_disk_name) do |dest|
-        if false # TODO dest.exists?(dest_file_name)
+        if dest.exists?(dest_file_name)
           raise "Destination file already exists: \"#{dest_file_name}\""
         end
 
@@ -94,29 +94,6 @@ command [:copy, :cp] do |c|
     end
 
   end
-end
-
-##
-# Pre command execution hook (TODO del?)
-
-pre do |global,command,options,args|
-  # Return false to abort command execution
-  true
-end
-
-##
-# Post command execution hook
-
-post do |global,command,options,args|
-  # Post logic here
-end
-
-##
-# Error handler
-
-on_error do |exception|
-  # Return false to skip default error handling
-  true
 end
 
 # Run the application
