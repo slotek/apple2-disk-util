@@ -1,0 +1,11 @@
+Metrics/LineLength:
+  Max: 120
+
+Layout/LeadingCommentSpace:
+  Enabled: false
+
+Style/FormatStringToken:
+  Enabled: false
+
+Style/NumericPredicate:
+  Enabled: false
