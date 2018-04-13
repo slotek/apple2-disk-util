@@ -4,18 +4,19 @@ require 'apple2/dos/file_entry.rb'
 require 'apple2/dos/vtoc.rb'
 
 module Apple2
-
   ##
   # Apple 2 DOS 3.3 Disk
-
+  #
   class DOSDisk
-
+    ##
+    # File info data object
+    #
     class FileInfo
       attr_reader :num_tsl_sectors, :num_data_sectors, :num_sectors
 
       def initialize(data)
         @num_tsl_sectors = (data.length / BYTES_PER_TSL_SECTOR) + ((data.length % BYTES_PER_TSL_SECTOR > 0) ? 1 : 0)
-        @num_data_sectors = data.length / Disk::BYTES_PER_SECTOR   # FIXME: assume no remainder
+        @num_data_sectors = data.length / Disk::BYTES_PER_SECTOR # FIXME: assume no remainder
         @num_sectors = @num_data_sectors + @num_tsl_sectors
       end
     end
@@ -30,7 +31,7 @@ module Apple2
 
     ##
     # Open specified disk image for reading and writing files
-
+    #
     def self.open(file)
       disk = DOSDisk.new(file)
 
@@ -47,7 +48,7 @@ module Apple2
 
     ##
     # Display disk catalog
-
+    #
     def self.catalog(file)
       puts "#{file}:"
       Apple2::DOSDisk.new(file).catalog.file_entries.each { |f| puts f.to_s }
@@ -60,27 +61,27 @@ module Apple2
 
     ##
     # Write changes and close the disk image.
-
+    #
     def close
       @disk.save(@filename) if @changed
     end
 
     ##
     # Return true if specified file exists
-
+    #
     def exists?(filename)
       @catalog.file_entries.find { |f| filename == f.name.strip }
     end
 
     ##
     # Read specified file
-
+    #
     def read(filename)
       file = nil
 
       file_entry = @catalog.file_entries.find { |f| filename == f.name.strip }
       if file_entry
-        data = ""
+        data = ''
         get_ts_list(file_entry).each do |t, s|
           data << @disk.read_bytes(t, s)
         end
@@ -92,16 +93,18 @@ module Apple2
 
     ##
     # Write specified file
-
+    #
     def write(file, filename = nil)
-      #TODO: fix ugliness
-      filename, type, data = (filename ? filename : file.name), file.flags, file.data
+      # TODO: fix ugliness
+      filename = (filename ? filename : file.name)
+      type = file.flags
+      data = file.data
       file_info = FileInfo.new(data)
 
       vtoc_free_sectors = @vtoc.free_sectors
       if file_info.num_sectors > vtoc_free_sectors.length
-        raise sprintf("Insufficient space. Free sectors: %d, file sectors: %d\n",
-                      vtoc_free_sectors.length, file_info.num_sectors)
+        raise format("Insufficient space. Free sectors: %d, file sectors: %d\n",
+                     vtoc_free_sectors.length, file_info.num_sectors)
       end
 
       free_sectors = vtoc_free_sectors.each
@@ -125,9 +128,9 @@ module Apple2
       end
 
       # Update links between tsl sectors
-      for tsl_sector_index in (0...tsl_sectors.length-1)
+      (0...tsl_sectors.length - 1).each do |tsl_sector_index|
         t, s = tsl_sectors[tsl_sector_index]
-        @disk.write_bytes(t, s, 1, tsl_sectors[tsl_sector_index + 1].pack("CC"))
+        @disk.write_bytes(t, s, 1, tsl_sectors[tsl_sector_index + 1].pack('CC'))
       end
 
       @vtoc.set_last_allocated_track(last_track_written)
@@ -152,13 +155,13 @@ module Apple2
       ts_list = []
       t = file_entry.ts_list_track
       s = file_entry.ts_list_sector
-      while (t > 0 && t < Disk::TRACKS_PER_DISK)
-        TRACK_SECTOR_LIST_OFFSET.step(Disk::BYTES_PER_SECTOR-1, 2) do |i|
-          ts = @disk.read_bytes(t, s, i, 2).unpack("CC")
+      while t > 0 && t < Disk::TRACKS_PER_DISK
+        TRACK_SECTOR_LIST_OFFSET.step(Disk::BYTES_PER_SECTOR - 1, 2) do |i|
+          ts = @disk.read_bytes(t, s, i, 2).unpack('CC')
           break if ts[0] == 0
           ts_list << ts
         end
-        t, s = @disk.read_bytes(t, s, 1, 2).unpack("CC")
+        t, s = @disk.read_bytes(t, s, 1, 2).unpack('CC')
       end
       ts_list
     end
@@ -172,9 +175,8 @@ module Apple2
     def write_file_link(tsl_ts, tsl_sector_index, link_ts, link_index)
       #printf("tsl %p, link %d = %p\n", tsl_ts, link_index, link_ts)
       @disk.write_bytes(tsl_ts[0], tsl_ts[1], TSL_SECTOR_NUM_OFFSET,
-                  [tsl_sector_index * LINKS_PER_TSL_SECTOR].pack("v"))
-      @disk.write_bytes(tsl_ts[0], tsl_ts[1], 2 * link_index + TSL_LINK_OFFSET, link_ts.pack("CC"))
+                        [tsl_sector_index * LINKS_PER_TSL_SECTOR].pack('v'))
+      @disk.write_bytes(tsl_ts[0], tsl_ts[1], 2 * link_index + TSL_LINK_OFFSET, link_ts.pack('CC'))
     end
   end
 end
-

@@ -3,7 +3,7 @@
 ##
 # Apple II DOS 3.3 disk image utility
 # Copyright (C) 2017 slotek@nym.hush.com
-
+#
 require 'gli'
 require 'apple2'
 
@@ -18,7 +18,7 @@ arguments :strict
 
 ##
 # Catalog command
-
+#
 desc 'Display contents of specified Apple II disk image(s)'
 long_desc """
 Display the Apple II DOS 3.3 catalog information for the specified
@@ -32,13 +32,13 @@ command [:catalog, :ls] do |c|
   c.desc 'Recursively search each specified directory'
   c.switch [:R, :recurse]
 
-  c.action do |global_options,options,args|
-    args << "." if args.empty?
+  c.action do |global_options, options, args|
+    args << '.' if args.empty?
     args.each do |path|
       if Dir.exists?(path)
         dir = path
-        dir << "/**" if options[:recurse]
-        dir << "/*.{do,dsk}"
+        dir << '/**' if options[:recurse]
+        dir << '/*.{do,dsk}'
         Dir.glob(dir, File::FNM_CASEFOLD).sort.each do |dsk|
           DOSDisk.catalog(dsk)
         end
@@ -51,27 +51,24 @@ end
 
 ##
 # Copy command
-
+#
 desc 'Copy a DOS 3.3 file from one disk image to another'
 arg_name 'src_file src_disk dest_disk'
 command [:copy, :cp] do |c|
   c.desc 'Verbose mode'
   c.switch [:v, :verbose]
+  c.flag [:d, :destination], arg_name: 'file', desc: 'Destination file name'
 
-  c.flag [:d, :destination],
-    :arg_name => 'file',
-    :desc => 'Destination file name'
-
-  c.action do |global_options,options,args|
+  c.action do |global_options, options, args|
     src_file_name = args.shift
     src_disk_name = args.shift
     dest_disk_name = args.shift
     dest_file_name = options[:destination] ||= src_file_name
 
-    raise "Source file not specified" if !src_file_name
-    raise "Source disk not specified" if !src_disk_name
-    raise "Destination disk not specified" if !dest_disk_name
-    raise "Too many copy command arguments" if args.length > 0
+    raise 'Source file not specified' unless src_file_name
+    raise 'Source disk not specified' unless src_disk_name
+    raise 'Destination disk not specified' unless dest_disk_name
+    raise 'Too many copy command arguments' unless args.empty?
 
     if options[:verbose]
       printf("Copying file \"%s\" from disk \"%s\" to file \"%s\" on disk \"%s\"\n",
@@ -80,15 +77,9 @@ command [:copy, :cp] do |c|
     end
 
     DOSDisk.open(src_disk_name) do |src|
-      if !src.exists?(src_file_name)
-        raise "Source file not found: \"#{src_file_name}\""
-      end
-
+      raise "Source file not found: \"#{src_file_name}\"" unless src.exists?(src_file_name)
       DOSDisk.open(dest_disk_name) do |dest|
-        if dest.exists?(dest_file_name)
-          raise "Destination file already exists: \"#{dest_file_name}\""
-        end
-
+        raise "Destination file already exists: \"#{dest_file_name}\"" if dest.exists?(dest_file_name)
         dest.write(src.read(src_file_name), dest_file_name)
       end
     end

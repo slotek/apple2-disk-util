@@ -1,8 +1,7 @@
 module Apple2::DOS
-
   ##
   # Apple 2 DOS 3.3 disk Volume Table Of Contents class
-
+  #
   class VTOC
     class Bitmap
       BITMAP_LENGTH = 2
@@ -28,11 +27,11 @@ module Apple2::DOS
       private
 
       def read_bitmap
-        @disk.read_bytes(VTOC::VTOC_TRACK, VTOC::VTOC_SECTOR, @offset, BITMAP_LENGTH).unpack("n").first
+        @disk.read_bytes(VTOC::VTOC_TRACK, VTOC::VTOC_SECTOR, @offset, BITMAP_LENGTH).unpack('n').first
       end
 
       def write_bitmap(bmp)
-        @disk.write_bytes(VTOC::VTOC_TRACK, VTOC::VTOC_SECTOR, @offset, [bmp].pack("n"))
+        @disk.write_bytes(VTOC::VTOC_TRACK, VTOC::VTOC_SECTOR, @offset, [bmp].pack('n'))
       end
     end
 
@@ -50,7 +49,7 @@ module Apple2::DOS
     end
 
     def valid?
-      @disk.read_byte(VTOC_TRACK, VTOC_SECTOR, SECTORS_PER_TRACK_OFFSET) == Disk::SECTORS_PER_TRACK
+      @disk.read_byte(VTOC_TRACK, VTOC_SECTOR, SECTORS_PER_TRACK_OFFSET) == Disk.SECTORS_PER_TRACK
     end
 
     def catalog_track
@@ -63,16 +62,16 @@ module Apple2::DOS
 
     def alloc(track_sector)
       t, s = track_sector
-      Bitmap.new(@disk, t).alloc(s) if Disk::valid_ts?(t, s)
+      Bitmap.new(@disk, t).alloc(s) if Disk.valid_ts?(t, s)
       track_sector
     end
 
     def free(track, sector)
-      Bitmap.new(@disk, track).free(sector) if Disk::valid_ts?(track, sector)
+      Bitmap.new(@disk, track).free(sector) if Disk.valid_ts?(track, sector)
     end
 
     def free?(track, sector)
-      Disk::valid_ts?(track, sector) ? Bitmap.new(@disk, track).free?(sector) : false
+      Disk.valid_ts?(track, sector) ? Bitmap.new(@disk, track).free?(sector) : false
     end
 
     def last_allocated_track
@@ -80,7 +79,7 @@ module Apple2::DOS
     end
 
     def set_last_allocated_track(track)
-      @disk.write_bytes(VTOC_TRACK, VTOC_SECTOR, LAST_ALLOCATED_TRACK_OFFSET, [track].pack("C"))
+      @disk.write_bytes(VTOC_TRACK, VTOC_SECTOR, LAST_ALLOCATED_TRACK_OFFSET, [track].pack('C'))
       set_allocation_direction(track)
     end
 
@@ -125,8 +124,7 @@ module Apple2::DOS
 
     def set_allocation_direction(track)
       d = track >= 0x11 ? 1 : 0xff
-      @disk.write_bytes(VTOC_TRACK, VTOC_SECTOR, ALLOCATION_DIRECTION_OFFSET, [d].pack("C"))
+      @disk.write_bytes(VTOC_TRACK, VTOC_SECTOR, ALLOCATION_DIRECTION_OFFSET, [d].pack('C'))
     end
   end
-
 end

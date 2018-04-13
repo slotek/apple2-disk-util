@@ -4,20 +4,20 @@ module Apple2
   ##
   # Apple 2 String class
   #
-
   class Apple2String < SimpleDelegator
     ##
     # Convert Apple 2 character to standard ASCII
-
+    #
     def self.to_ascii(c)
-      if (c >= 0 && c <= 0x1f)
-        c += 0x40
-      elsif (c >= 0x60 && c <= 0x7f)
-        c -= 0x40
-      elsif (c >= 0x80)
-        c -= 0x80
+      if c >= 0 && c <= 0x1f
+        c + 0x40
+      elsif c >= 0x60 && c <= 0x7f
+        c - 0x40
+      elsif c >= 0x80
+        c - 0x80
+      else
+        c
       end
-      return c
     end
 
     ##
@@ -30,22 +30,22 @@ module Apple2
     #   40-5f => 40-5f Flashing uppercase alpha
     #   60-7f => 20-3f Flashing symbols
     #   80-ff => 00-7f Normal text
-
+    #
     def self.parse(buffer)
       str = Apple2String.new
-      buffer.each_byte { |c| str << self.to_ascii(c) }
+      buffer.each_byte { |c| str << to_ascii(c) }
       str
     end
 
-    def initialize(str = "")
+    def initialize(str = '')
       super(str)
     end
 
     ##
     # Return string as an Apple 2 character buffer
-
+    #
     def to_buffer
-      buffer = String.new("", :encoding => "ASCII-8BIT")
+      buffer = String.new('', encoding: 'ASCII-8BIT')
       each_byte { |c| buffer << (c | 0x80) }
       buffer
     end

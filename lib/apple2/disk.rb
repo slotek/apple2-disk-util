@@ -1,10 +1,8 @@
 module Apple2
-
   ##
   # Apple2 16-Sector disk
-
+  #
   class Disk
-
     TRACKS_PER_DISK     = 35
     SECTORS_PER_TRACK   = 16
     BYTES_PER_SECTOR    = 256
@@ -13,10 +11,10 @@ module Apple2
 
     ##
     # Load disk from specified file.
-
+    #
     def self.load(filename)
       data = nil
-      File.open(filename, "rb") { |f| data = f.read }
+      File.open(filename, 'rb') { |f| data = f.read }
       Disk.new(data)
     end
 
@@ -26,9 +24,9 @@ module Apple2
 
     ##
     # Save disk to specified file.
-
+    #
     def save(filename)
-      File.open(filename, "wb") { |f| f << @buf }
+      File.open(filename, 'wb') { |f| f << @buf }
     end
 
     def valid?
@@ -36,26 +34,20 @@ module Apple2
     end
 
     def read_byte(track, sector, byte = 0)
-      @buf[to_offset(track, sector, byte)].unpack("C").first
+      @buf[to_offset(track, sector, byte)].unpack('C').first
     end
 
     def read_bytes(track, sector, byte = 0, length = BYTES_PER_SECTOR)
-      if length > 0 && (byte + length <= BYTES_PER_SECTOR)
-        return @buf[to_offset(track, sector, byte), length]
-      else
-        raise "Cannot read #{length} bytes from offset #{byte}"
-      end
+      raise "Cannot read #{length} bytes from offset #{byte}" if length < 1 || (byte + length > BYTES_PER_SECTOR)
+      @buf[to_offset(track, sector, byte), length]
     end
 
     def write_bytes(track, sector, byte, src)
-      if src.length > 0 && (byte + src.length <= BYTES_PER_SECTOR)
-        i = to_offset(track, sector, byte)
-        src.each_char do |c|
-          @buf[i] = c
-          i += 1
-        end
-      else
-        raise "Cannot write #{src.length} bytes at offset #{byte}"
+      raise "Cannot write #{src.length} bytes at offset #{byte}" if src.empty? || (byte + src.length > BYTES_PER_SECTOR)
+      i = to_offset(track, sector, byte)
+      src.each_char do |c|
+        @buf[i] = c
+        i += 1
       end
     end
 
@@ -66,12 +58,9 @@ module Apple2
     end
 
     def to_offset(track, sector, byte = 0)
-      if track >= 0 && track < TRACKS_PER_DISK && sector >= 0 && sector < SECTORS_PER_TRACK && byte >= 0 && byte < BYTES_PER_SECTOR
-        return track * BYTES_PER_TRACK + sector * BYTES_PER_SECTOR + byte
-      else
-        raise sprintf("Invalid offset: track %02x, sector %02x, byte %02x", track, sector, byte)
-      end
+      raise format('Invalid offset: track %02x, sector %02x, byte %02x', track, sector, byte) unless
+        track >= 0 && track < TRACKS_PER_DISK && sector >= 0 && sector < SECTORS_PER_TRACK && byte >= 0 && byte < BYTES_PER_SECTOR
+      track * BYTES_PER_TRACK + sector * BYTES_PER_SECTOR + byte
     end
-
   end
 end
